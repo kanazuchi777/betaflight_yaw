@@ -247,6 +247,21 @@ testing::AssertionResult DoubleNearWrapPredFormat(const char* expr1, const char*
 
 
 
+TEST(ImuHeadingConvention, PositiveGyroYawDecreasesCompassHeading)
+{
+    for (float rateDps : {-20.0f, 20.0f}) {
+        quaternion_from_axis_angle(&q, -DEGREES_TO_RADIANS(90), 0, 0, 1);
+        imuComputeRotationMatrix();
+        // Integrate gyro alone, so magnetic/GPS feedback cannot mask the sign.
+        for (int i = 0; i < 100; i++) {
+            imuMahonyAHRSupdate(0.001f, 0, 0, DEGREES_TO_RADIANS(rateDps),
+                false, 0, 0, 0, 0, 0, 0);
+        }
+        imuUpdateEulerAngles();
+        EXPECT_NEAR(900.0f - rateDps, attitude.values.yaw, 1.0f);
+    }
+}
+
 class MahonyFixture : public ::testing::Test {
 protected:
     vector3_t gyro;

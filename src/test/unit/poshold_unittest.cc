@@ -48,8 +48,11 @@ extern "C" {
 
     #include "pg/autopilot.h"
     #include "flight/autopilot.h"
+    #include "pg/pos_hold.h"
+    #include "flight/pos_hold.h"
 
     PG_REGISTER(autopilotConfig_t, autopilotConfig, PG_AUTOPILOT, 0);
+    PG_REGISTER(posHoldConfig_t, posHoldConfig, PG_POSHOLD_CONFIG, 0);
     PG_REGISTER(positionConfig_t, positionConfig, PG_POSITION, 0);
     PG_REGISTER(gyroConfig_t, gyroConfig, PG_GYRO_CONFIG, 0);
     PG_REGISTER(rcControlsConfig_t, rcControlsConfig, PG_RC_CONTROLS_CONFIG, 0);
@@ -62,6 +65,10 @@ extern "C" {
     }
     void positionEstimatorEnableXY(bool enable) { UNUSED(enable); }
     bool positionEstimatorIsValidXY(void) { return testEstimate.isValidXY; }
+    static bool mockHeadingRequired = true;
+    bool positionEstimatorIsHeadingRequired(void) { return mockHeadingRequired; }
+    static bool mockHeadingValid = true;
+    bool imuIsHeadingValid(void) { return mockHeadingValid; }
 
     // Nav stubs: default to no active navigation (plain position hold);
     // yaw-control tests drive them via the mockNav* variables.
@@ -94,8 +101,13 @@ extern "C" {
     gpsSolutionData_t gpsSol;
     gyro_t gyro;
     float rcCommand[4];
+    float rcData[MAX_SUPPORTED_RC_CHANNEL_COUNT];
+    static pidProfile_t testPidProfile;
+    pidProfile_t *currentPidProfile = &testPidProfile;
+    float getRcDeflectionAbs(int axis) { return fabsf(rcCommand[axis]) / 500.0f; }
 
-    bool failsafeIsActive(void) { return false; }
+    static bool mockFailsafeActive;
+    bool failsafeIsActive(void) { return mockFailsafeActive; }
 
     void parseRcChannels(const char *input, rxConfig_t *rxConfig) {
         UNUSED(input);
@@ -193,8 +205,261 @@ protected:
         mockNavHasActiveTarget = false;
         mockTargetVelCmS = (vector3_t){{0.0f, 0.0f, 0.0f}};
         flightModeFlags = 0;
+        armingFlags = 0;
+        mockHeadingRequired = true;
+        mockHeadingValid = true;
+        mockFailsafeActive = false;
+        memset(rcCommand, 0, sizeof(rcCommand));
+        rxConfigMutable()->midrc = 1500;
+        for (float &channel : rcData) {
+            channel = 1500;
+        }
+        rcControlsConfigMutable()->yaw_control_reversed = false;
+        currentPidProfile->pid[PID_MAG].P = 40;
+        simulatedStickRoll = simulatedStickPitch = 0;
+        updatePosHold(0);
+        posHoldInit();
     }
 };
+
+class PosHoldHeadingTest : public PosHoldTest {
+protected:
+    void SetUp() override {
+        PosHoldTest::SetUp();
+        initAndSettleAt(0, 0, 900);
+        posHoldConfigMutable()->deadband = 5;
+        posHoldInit();
+        armingFlags = ARMED;
+        flightModeFlags = POS_HOLD_MODE;
+        updatePosHold(0);
+        ASSERT_TRUE(posHoldHeadingControlActive());
+    }
+
+    void heading(int16_t decidegrees) {
+        attitude.values.yaw = decidegrees;
+        updatePosHold(10000);
+    }
+};
+
+TEST_F(PosHoldHeadingTest, CapturesAndCorrectsBothDirectionsWithoutRamp)
+{
+    EXPECT_FLOAT_EQ(0.0f, posHoldGetYawRate());
+    heading(950);
+    EXPECT_FLOAT_EQ(20.0f, posHoldGetYawRate()); // positive gyro yaw reduces compass heading
+    heading(850);
+    EXPECT_FLOAT_EQ(-20.0f, posHoldGetYawRate());
+    rcControlsConfigMutable()->yaw_control_reversed = true;
+    heading(950);
+    EXPECT_FLOAT_EQ(20.0f, posHoldGetYawRate());
+}
+
+TEST_F(PosHoldHeadingTest, WrapsThroughNorthBothWays)
+{
+    posHoldInit();
+    heading(3590);
+    heading(10);
+    EXPECT_FLOAT_EQ(8.0f, posHoldGetYawRate());
+    posHoldInit();
+    heading(10);
+    heading(3590);
+    EXPECT_FLOAT_EQ(-8.0f, posHoldGetYawRate());
+}
+
+TEST_F(PosHoldHeadingTest, LimitsRateToNinetyBothWays)
+{
+    heading(1800);
+    EXPECT_FLOAT_EQ(90.0f, posHoldGetYawRate());
+    heading(0);
+    EXPECT_FLOAT_EQ(-90.0f, posHoldGetYawRate());
+}
+
+TEST_F(PosHoldHeadingTest, MagPGainScalesDegreesToDegreesPerSecond)
+{
+    currentPidProfile->pid[PID_MAG].P = 20;
+    heading(950);
+    EXPECT_FLOAT_EQ(10, posHoldGetYawRate());
+}
+
+TEST_F(PosHoldHeadingTest, MissionYawRetainsPriority)
+{
+    flightModeFlags |= AUTOPILOT_MODE;
+    heading(950);
+    EXPECT_FALSE(posHoldHeadingControlActive());
+    flightModeFlags &= ~AUTOPILOT_MODE;
+    heading(1200);
+    EXPECT_TRUE(posHoldHeadingControlActive());
+    EXPECT_FLOAT_EQ(0, posHoldGetYawRate());
+}
+
+TEST_F(PosHoldHeadingTest, InclusiveTenPercentBeforeRcDeadband)
+{
+    // Neither the XY nor the configurable RC deadband changes the yaw gate.
+    posHoldConfigMutable()->deadband = 40;
+    posHoldInit();
+    heading(900); // initialisation invalidates the previous target
+    rcControlsConfigMutable()->yaw_deadband = 30;
+    autopilotConfigMutable()->stickDeadband = 200;
+    for (float pulse : {1450.0f, 1550.0f}) {
+        rcData[FD_YAW] = pulse;
+        heading(950);
+        EXPECT_TRUE(posHoldHeadingControlActive());
+        EXPECT_FLOAT_EQ(20.0f, posHoldGetYawRate());
+    }
+    for (float pulse : {1449.9f, 1550.1f}) {
+        rcData[FD_YAW] = pulse;
+        EXPECT_FALSE(posHoldHeadingControlActive()); // before position task
+        heading(1000);
+        EXPECT_FALSE(posHoldHeadingControlActive());
+        rcData[FD_YAW] = 1500;
+        heading(900);
+        EXPECT_TRUE(posHoldHeadingControlActive());
+    }
+    rxConfigMutable()->midrc = 1520;
+    rcData[FD_YAW] = 1570;
+    EXPECT_TRUE(posHoldHeadingControlActive());
+}
+
+TEST_F(PosHoldHeadingTest, ManualTurnRecapturesOnRelease)
+{
+    rcData[FD_YAW] = 1700;
+    heading(1200);
+    EXPECT_FALSE(posHoldHeadingControlActive());
+    heading(1500);
+    rcData[FD_YAW] = 1500;
+    heading(1600); // release captures this heading, not the previous task's sample
+    ASSERT_TRUE(posHoldHeadingControlActive());
+    EXPECT_FLOAT_EQ(0.0f, posHoldGetYawRate());
+    heading(1650);
+    EXPECT_FLOAT_EQ(20.0f, posHoldGetYawRate());
+}
+
+TEST_F(PosHoldHeadingTest, EntryWithYawDeflectedWaitsForRelease)
+{
+    flightModeFlags = 0;
+    updatePosHold(0);
+    rcData[FD_YAW] = 1700;
+    flightModeFlags = POS_HOLD_MODE;
+    heading(1800);
+    EXPECT_FALSE(posHoldHeadingControlActive());
+    rcData[FD_YAW] = 1500;
+    heading(2000);
+    EXPECT_TRUE(posHoldHeadingControlActive());
+    EXPECT_FLOAT_EQ(0, posHoldGetYawRate());
+}
+
+TEST_F(PosHoldHeadingTest, BriefYawInputBetweenPositionTicksInvalidatesTarget)
+{
+    rcData[FD_YAW] = 1600;
+    EXPECT_FALSE(posHoldHeadingControlActive());
+    rcData[FD_YAW] = 1500;
+    heading(1100);
+    EXPECT_TRUE(posHoldHeadingControlActive());
+    EXPECT_FLOAT_EQ(0, posHoldGetYawRate());
+}
+
+TEST_F(PosHoldHeadingTest, RollPitchMovementDoesNotReleaseHeading)
+{
+    rcCommand[FD_ROLL] = 400;
+    rcCommand[FD_PITCH] = -350;
+    simulatedStickRoll = 200;
+    simulatedStickPitch = -150;
+    heading(950);
+    EXPECT_TRUE(posHoldHeadingControlActive());
+    EXPECT_FLOAT_EQ(20.0f, posHoldGetYawRate());
+    simulatedStickRoll = simulatedStickPitch = 0;
+}
+
+TEST_F(PosHoldHeadingTest, ModeExitAndDisarmInvalidateImmediately)
+{
+    heading(950);
+    flightModeFlags = 0;
+    EXPECT_FALSE(posHoldHeadingControlActive());
+    EXPECT_FALSE(posHoldHeadingControlActive());
+    updatePosHold(0);
+    flightModeFlags = POS_HOLD_MODE;
+    heading(1800);
+    EXPECT_FLOAT_EQ(0.0f, posHoldGetYawRate());
+    armingFlags = 0; // mode flag may remain set until RX runs
+    EXPECT_FALSE(posHoldHeadingControlActive());
+    EXPECT_FALSE(posHoldHeadingControlActive());
+    heading(2000);
+    EXPECT_FALSE(posHoldHeadingControlActive());
+    armingFlags = ARMED;
+    heading(2500);
+    EXPECT_TRUE(posHoldHeadingControlActive());
+    EXPECT_FLOAT_EQ(0.0f, posHoldGetYawRate());
+}
+
+TEST_F(PosHoldHeadingTest, HeadingLossAndRecoveryRecaptures)
+{
+    mockHeadingValid = false;
+    EXPECT_FALSE(posHoldHeadingControlActive());
+    heading(1800);
+    EXPECT_FALSE(posHoldHeadingControlActive());
+    mockHeadingValid = true;
+    heading(2700);
+    EXPECT_TRUE(posHoldHeadingControlActive());
+    EXPECT_FLOAT_EQ(0.0f, posHoldGetYawRate());
+}
+
+TEST_F(PosHoldHeadingTest, PositionLossAndRecoveryRecaptures)
+{
+    testEstimate.isValidXY = false;
+    EXPECT_FALSE(posHoldHeadingControlActive());
+    heading(1800);
+    EXPECT_FALSE(isAutopilotInControl());
+    testEstimate.isValidXY = true;
+    heading(2700);
+    EXPECT_TRUE(posHoldHeadingControlActive());
+    EXPECT_FLOAT_EQ(0.0f, posHoldGetYawRate());
+}
+
+TEST_F(PosHoldHeadingTest, ControlFailureAndRecoveryRecaptures)
+{
+    autopilotForceLevelPark(true);
+    heading(1800);
+    EXPECT_FALSE(posHoldHeadingControlActive());
+    EXPECT_FALSE(isAutopilotInControl());
+    autopilotForceLevelPark(false);
+    heading(2700);
+    EXPECT_TRUE(posHoldHeadingControlActive());
+    EXPECT_FLOAT_EQ(0.0f, posHoldGetYawRate());
+}
+
+TEST_F(PosHoldHeadingTest, RescueTakesPriorityThenRecaptures)
+{
+    flightModeFlags |= GPS_RESCUE_MODE;
+    EXPECT_FALSE(posHoldHeadingControlActive());
+    heading(900);
+    EXPECT_FALSE(posHoldHeadingControlActive());
+    EXPECT_FLOAT_EQ(0, posHoldGetYawRate());
+    flightModeFlags &= ~GPS_RESCUE_MODE;
+    heading(1200);
+    EXPECT_TRUE(posHoldHeadingControlActive());
+    EXPECT_FLOAT_EQ(0.0f, posHoldGetYawRate());
+}
+
+TEST_F(PosHoldHeadingTest, FailsafeIgnoresReceiverYaw)
+{
+    mockFailsafeActive = true;
+    rcData[FD_YAW] = 2000;
+    rcCommand[FD_YAW] = 1.0f;
+    heading(950);
+    EXPECT_TRUE(posHoldHeadingControlActive());
+    EXPECT_FLOAT_EQ(20.0f, posHoldGetYawRate());
+    mockFailsafeActive = false;
+    EXPECT_FALSE(posHoldHeadingControlActive());
+}
+
+TEST_F(PosHoldHeadingTest, AltHoldAndMagDoNotCompete)
+{
+    flightModeFlags |= ALT_HOLD_MODE | MAG_MODE;
+    heading(950);
+    EXPECT_TRUE(posHoldHeadingControlActive());
+    EXPECT_FLOAT_EQ(20.0f, posHoldGetYawRate());
+    flightModeFlags &= ~POS_HOLD_MODE;
+    EXPECT_FALSE(posHoldHeadingControlActive());
+}
 
 // -- Basic sanity --
 

@@ -46,6 +46,7 @@
 #include "flight/gps_rescue.h"
 #include "flight/pid.h"
 #include "flight/pid_init.h"
+#include "flight/pos_hold.h"
 
 #include "pg/autopilot.h"
 
@@ -105,6 +106,11 @@ static pt1Filter_t feedforwardYawHoldLpf;
 
 float getFeedforward(int axis)
 {
+#if defined(USE_POSITION_HOLD) && !defined(USE_WING)
+    if (axis == FD_YAW && posHoldHeadingControlActive()) {
+        return 0.0f; // suppress even residual smoothed pilot/yaw-hold feedforward
+    }
+#endif
 #ifdef USE_RC_SMOOTHING_FILTER
     return rxConfig()->rc_smoothing ? feedforwardSmoothed[axis] : feedforwardRaw[axis];
 #else
@@ -119,6 +125,11 @@ static float rcDeflectionSmoothed[3];
 
 float getSetpointRate(int axis)
 {
+#if defined(USE_POSITION_HOLD) && !defined(USE_WING)
+    if (axis == FD_YAW && posHoldHeadingControlActive()) {
+        return posHoldGetYawRate(); // after RC smoothing, independent of RX packet arrival
+    }
+#endif
 #ifdef USE_RC_SMOOTHING_FILTER
     return rxConfig()->rc_smoothing ? setpointRate[axis] : rawSetpoint[axis];
 #else

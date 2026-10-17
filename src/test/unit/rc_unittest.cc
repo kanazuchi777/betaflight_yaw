@@ -63,8 +63,10 @@ extern "C" {
     bool failsafeIsActive(void) { return false; }
     bool featureIsEnabled(const uint32_t) { return false; }
     bool IS_RC_MODE_ACTIVE(boxId_e) { return false; }
-    bool autopilotYawControlActive(void) { return false; }
-    float autopilotGetYawRate(void) { return 0.0f; }
+    static bool mockAutopilotYawActive;
+    static float mockAutopilotYawRate;
+    bool autopilotYawControlActive(void) { return mockAutopilotYawActive; }
+    float autopilotGetYawRate(void) { return mockAutopilotYawRate; }
     void imuQuaternionHeadfreeTransformVectorEarthToBody(vector3_t *) { }
 
     const lowVoltageCutoff_t *getLowVoltageCutoff(void)

@@ -91,6 +91,8 @@ extern "C" {
     uint8_t debugMode = 0;
     int16_t debug[DEBUG16_VALUE_COUNT];
     pidProfile_t *currentPidProfile;
+    void updateMagHold(void);
+    extern int16_t magHold;
     controlRateConfig_t *currentControlRateProfile;
     attitudeEulerAngles_t attitude;
 
@@ -119,6 +121,39 @@ bool gyroCalibDone = false;
 bool simulationHaveRx = false;
 
 #include "gtest/gtest.h"
+
+TEST(MagPosHold, PosHoldSuppressesMagAndReanchorsItsTarget)
+{
+    const bool savedUpright = mockIsUpright;
+    pidProfile_t *savedProfile = currentPidProfile;
+    const uint16_t savedModes = flightModeFlags;
+    const int16_t savedHeading = attitude.values.yaw;
+    const int16_t savedMagHold = magHold;
+    const float savedYaw = rcCommand[YAW];
+    static pidProfile_t profile;
+    currentPidProfile = &profile;
+    profile.pid[PID_MAG].P = 40;
+    mockIsUpright = true;
+    flightModeFlags = MAG_MODE | POS_HOLD_MODE | ALT_HOLD_MODE;
+    magHold = 90;
+    attitude.values.yaw = 1200;
+    rcCommand[YAW] = 0;
+    updateMagHold();
+    EXPECT_FLOAT_EQ(0, rcCommand[YAW]);
+    EXPECT_EQ(120, magHold);
+    flightModeFlags = MAG_MODE;
+    updateMagHold();
+    EXPECT_FLOAT_EQ(0, rcCommand[YAW]);
+    attitude.values.yaw = 1250;
+    updateMagHold();
+    EXPECT_GT(rcCommand[YAW], 0);
+    mockIsUpright = savedUpright;
+    currentPidProfile = savedProfile;
+    flightModeFlags = savedModes;
+    attitude.values.yaw = savedHeading;
+    magHold = savedMagHold;
+    rcCommand[YAW] = savedYaw;
+}
 
 TEST(ArmingPreventionTest, CalibrationPowerOnGraceAngleThrottleArmSwitch)
 {

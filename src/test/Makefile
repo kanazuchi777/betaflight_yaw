@@ -60,7 +60,7 @@ arming_prevention_unittest_SRC := \
 		$(USER_DIR)/flight/gps_rescue_multirotor.c
 
 arming_prevention_unittest_DEFINES := \
-            USE_GPS_RESCUE=
+            USE_GPS_RESCUE= USE_POSITION_HOLD=
 
 atomic_unittest_SRC := \
 		$(USER_DIR)/build/atomic.c \
@@ -347,6 +347,9 @@ rc_unittest_SRC := \
 		$(USER_DIR)/common/streambuf.c \
 		$(USER_DIR)/common/maths.c
 
+rc_poshold_unittest_SRC := $(rc_unittest_SRC) $(USER_DIR)/common/filter.c
+rc_poshold_unittest_DEFINES := USE_POSITION_HOLD= USE_GPS_RESCUE= USE_FEEDFORWARD= USE_RC_SMOOTHING_FILTER=
+
 rc_controls_unittest_SRC := \
 		$(USER_DIR)/fc/rc_controls.c \
 		$(USER_DIR)/pg/pg.c \
@@ -568,10 +571,13 @@ position_rescue_geometry_unittest_SRC := \
 
 poshold_unittest_SRC := \
 		$(USER_DIR)/flight/autopilot_multirotor.c \
+		$(USER_DIR)/flight/pos_hold_multirotor.c \
 		$(USER_DIR)/common/maths.c \
 		$(USER_DIR)/common/vector.c \
 		$(USER_DIR)/common/filter.c \
 		$(USER_DIR)/pg/rx.c
+
+poshold_unittest_DEFINES := USE_POSITION_HOLD=
 
 position_estimator_unittest_SRC := \
 		$(USER_DIR)/flight/position_estimator.c \

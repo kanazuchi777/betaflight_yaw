@@ -684,15 +684,21 @@ RAM_CODE static bool mspCommonProcessOutCommand(mspDescriptor_t srcDesc, int16_t
         sbufWriteData(dst, flightControllerIdentifier, FLIGHT_CONTROLLER_IDENTIFIER_LENGTH);
         break;
 
-    case MSP_FC_VERSION:
+    case MSP_FC_VERSION: {
+        // LTO can copy this constant with LDMIA on Cortex-M4. An anonymous
+        // pooled string may land at an unaligned address after linking, which
+        // faults during the Configurator handshake. Give it explicit storage
+        // and word alignment instead of relying on string-pool alignment.
+        static const char mspFirmwareVersion[] __attribute__((aligned(4))) = FC_VERSION_STRING;
         sbufWriteU8(dst, (uint8_t)(FC_VERSION_YEAR - FC_CALVER_BASE_YEAR)); // year since 2000
         sbufWriteU8(dst, FC_VERSION_MONTH);
         sbufWriteU8(dst, FC_VERSION_PATCH_LEVEL);
         if (!mspSrcIsVtxPort(srcDesc)) {
             // this reply was 3 bytes up to and including API 1.46; keep that shape for HD VTXs
-            sbufWritePString(dst, FC_VERSION_STRING);
+            sbufWritePString(dst, mspFirmwareVersion);
         }
         break;
+    }
 
     case MSP2_MCU_INFO: {
         sbufWriteU8(dst, MCU_TYPE_ID_PROVIDED_BY_NAME);

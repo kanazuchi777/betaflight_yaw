@@ -728,8 +728,17 @@ static void updateInflightCalibrationState(void)
 }
 
 #if defined(USE_GPS) || defined(USE_MAG)
-static void updateMagHold(void)
+STATIC_UNIT_TESTED void updateMagHold(void)
 {
+#if defined(USE_POSITION_HOLD) && !defined(USE_WING)
+    if (FLIGHT_MODE(POS_HOLD_MODE)) {
+        // POSHOLD supplies its own rate to the yaw PID. Keep MAG's target fresh
+        // for mode exit without running a second heading controller or modifying
+        // the pilot's RC history (also during manual yaw or sensor loss).
+        magHold = DECIDEGREES_TO_DEGREES(attitude.values.yaw);
+        return;
+    }
+#endif
     if (fabsf(rcCommand[YAW]) < 15 && FLIGHT_MODE(MAG_MODE)) {
         int16_t dif = DECIDEGREES_TO_DEGREES(attitude.values.yaw) - magHold;
         if (dif <= -180)

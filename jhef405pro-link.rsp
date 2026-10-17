@@ -1,0 +1,4 @@
+-flto-partition=none
+-fno-merge-all-constants
+-fno-merge-constants
+-fno-builtin-memcpy

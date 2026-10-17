@@ -27,6 +27,8 @@
 void posHoldInit(void);
 void updatePosHold(timeUs_t currentTimeUs);
 bool isAutopilotInControl(void);
+bool posHoldHeadingControlActive(void);
+float posHoldGetYawRate(void); // degrees/second, in the gyro yaw convention
 
 bool posHoldFailure(void);
 bool posHoldReady(void);
